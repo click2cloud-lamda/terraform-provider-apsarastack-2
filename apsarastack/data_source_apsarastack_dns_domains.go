@@ -62,6 +62,11 @@ func dataSourceApsaraStackDnsDomains() *schema.Resource {
 				Optional: true,
 				ForceNew: true,
 			},
+			"page_size": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
 			// Computed values
 			"domains": {
 				Type:     schema.TypeList,
@@ -135,6 +140,8 @@ func dataSourceApsaraStackDnsDomainsRead(d *schema.ResourceData, meta interface{
 		"RegionId":        client.RegionId,
 		"Action":          "ObtainGlobalAuthZoneList",
 		"Version":         "2018-07-20",
+		"PageSize":        "2000",
+		"PageNumber":      "1",
 	}
 
 	var addDomains = DnsDomains{}

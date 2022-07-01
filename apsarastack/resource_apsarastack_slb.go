@@ -34,9 +34,14 @@ func resourceApsaraStackSlb() *schema.Resource {
 				Optional:     true,
 				ForceNew:     true,
 				Computed:     true,
-				ValidateFunc: validation.StringInSlice([]string{"internet", "intranet"}, false),
+				ValidateFunc: validation.StringInSlice([]string{"internet", "intranet", "VPC"}, false),
 			},
-
+			"specification": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Computed:     true,
+				ValidateFunc: validation.StringInSlice([]string{"slb.s1.small", "slb.s2.medium", "slb.s2.small", "slb.s3.large", "slb.s3.medium", "slb.s3.small", "slb.s4.large"}, false),
+			},
 			"vswitch_id": {
 				Type:             schema.TypeString,
 				Optional:         true,
@@ -80,11 +85,12 @@ func resourceApsaraStackSlbCreate(d *schema.ResourceData, meta interface{}) erro
 	if v, ok := d.GetOk("address_type"); ok && v.(string) != "" {
 		request.AddressType = strings.ToLower(v.(string))
 	}
-
 	if v, ok := d.GetOk("vswitch_id"); ok && v.(string) != "" {
 		request.VSwitchId = v.(string)
 	}
-
+	if v, ok := d.GetOk("specification"); ok && v.(string) != "" {
+		request.LoadBalancerSpec = v.(string)
+	}
 	var raw interface{}
 
 	invoker := Invoker{}
@@ -129,7 +135,7 @@ func resourceApsaraStackSlbRead(d *schema.ResourceData, meta interface{}) error 
 	d.Set("address_type", object.AddressType)
 	d.Set("vswitch_id", object.VSwitchId)
 	d.Set("address", object.Address)
-
+	d.Set("specification", object.LoadBalancerSpec)
 	tags, _ := slbService.DescribeTags(d.Id(), nil, TagResourceInstance)
 	if len(tags) > 0 {
 		if err := d.Set("tags", slbService.tagsToMap(tags)); err != nil {

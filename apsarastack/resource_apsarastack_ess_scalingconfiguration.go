@@ -84,7 +84,7 @@ func resourceApsaraStackEssScalingConfiguration() *schema.Resource {
 				Type:         schema.TypeString,
 				Optional:     true,
 				Default:      DiskCloudEfficiency,
-				ValidateFunc: validation.StringInSlice([]string{"cloud", "ephemeral_ssd", "cloud_ssd", "cloud_efficiency"}, false),
+				ValidateFunc: validation.StringInSlice([]string{"cloud", "ephemeral_ssd", "cloud_ssd", "cloud_efficiency", "cloud_pperf", "cloud_sperf"}, false),
 			},
 			"system_disk_size": {
 				Type:         schema.TypeInt,
@@ -104,13 +104,21 @@ func resourceApsaraStackEssScalingConfiguration() *schema.Resource {
 							Type:         schema.TypeString,
 							Optional:     true,
 							Default:      "cloud",
-							ValidateFunc: validation.StringInSlice([]string{"all", "cloud", "ephemeral_ssd", "cloud_efficiency", "cloud_ssd"}, false),
+							ValidateFunc: validation.StringInSlice([]string{"all", "cloud", "ephemeral_ssd", "cloud_efficiency", "cloud_ssd", "cloud_pperf", "cloud_sperf"}, false),
 						},
 						"snapshot_id": {
 							Type:     schema.TypeString,
 							Optional: true,
 						},
 						"device": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"encrypted": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"kms_key_id": {
 							Type:     schema.TypeString,
 							Optional: true,
 						},
@@ -245,7 +253,7 @@ func resourceApsaraStackEssScalingConfigurationUpdate(d *schema.ResourceData, me
 				}
 			}
 		}
-		d.SetPartial("active")
+		//d.SetPartial("active")
 	}
 
 	if err := enableEssScalingConfiguration(d, meta); err != nil {
@@ -276,12 +284,12 @@ func modifyEssScalingConfiguration(d *schema.ResourceData, meta interface{}) err
 
 	if d.HasChange("override") {
 		request.Override = requests.NewBoolean(d.Get("override").(bool))
-		d.SetPartial("override")
+		//d.SetPartial("override")
 	}
 
 	if d.HasChange("image_id") || d.Get("override").(bool) {
 		request.ImageId = d.Get("image_id").(string)
-		d.SetPartial("image_id")
+		//d.SetPartial("image_id")
 	}
 
 	hasChangeInstanceType := d.HasChange("instance_type")
@@ -318,17 +326,17 @@ func modifyEssScalingConfiguration(d *schema.ResourceData, meta interface{}) err
 
 	if d.HasChange("scaling_configuration_name") {
 		request.ScalingConfigurationName = d.Get("scaling_configuration_name").(string)
-		d.SetPartial("scaling_configuration_name")
+		//d.SetPartial("scaling_configuration_name")
 	}
 
 	if d.HasChange("system_disk_category") {
 		request.SystemDiskCategory = d.Get("system_disk_category").(string)
-		d.SetPartial("system_disk_category")
+		//d.SetPartial("system_disk_category")
 	}
 
 	if d.HasChange("system_disk_size") {
 		request.SystemDiskSize = requests.NewInteger(d.Get("system_disk_size").(int))
-		d.SetPartial("system_disk_size")
+		//d.SetPartial("system_disk_size")
 	}
 
 	if d.HasChange("user_data") {
@@ -340,22 +348,22 @@ func modifyEssScalingConfiguration(d *schema.ResourceData, meta interface{}) err
 				request.UserData = base64.StdEncoding.EncodeToString([]byte(v.(string)))
 			}
 		}
-		d.SetPartial("user_data")
+		//d.SetPartial("user_data")
 	}
 
 	if d.HasChange("role_name") {
 		request.RamRoleName = d.Get("role_name").(string)
-		d.SetPartial("role_name")
+		//d.SetPartial("role_name")
 	}
 
 	if d.HasChange("key_name") {
 		request.KeyPairName = d.Get("key_name").(string)
-		d.SetPartial("key_name")
+		//d.SetPartial("key_name")
 	}
 
 	if d.HasChange("instance_name") {
 		request.InstanceName = d.Get("instance_name").(string)
-		d.SetPartial("instance_name")
+		//d.SetPartial("instance_name")
 	}
 
 	if d.HasChange("tags") {
@@ -366,7 +374,7 @@ func modifyEssScalingConfiguration(d *schema.ResourceData, meta interface{}) err
 			}
 			request.Tags = strings.TrimSuffix(tags, ",") + "}"
 		}
-		d.SetPartial("tags")
+		//d.SetPartial("tags")
 	}
 
 	if d.HasChange("data_disk") {
@@ -380,13 +388,15 @@ func modifyEssScalingConfiguration(d *schema.ResourceData, meta interface{}) err
 					Size:               strconv.Itoa(pack["size"].(int)),
 					Category:           pack["category"].(string),
 					SnapshotId:         pack["snapshot_id"].(string),
+					Encrypted:          pack["encrypted"].(string),
+					KMSKeyId:           pack["kms_key_id"].(string),
 					DeleteWithInstance: strconv.FormatBool(pack["delete_with_instance"].(bool)),
 				}
 				createDataDisks = append(createDataDisks, dataDisk)
 			}
 			request.DataDisk = &createDataDisks
 		}
-		d.SetPartial("data_disk")
+		//d.SetPartial("data_disk")
 	}
 	raw, err := client.WithEssClient(func(essClient *ess.Client) (interface{}, error) {
 		return essClient.ModifyScalingConfiguration(request)
@@ -455,7 +465,7 @@ func enableEssScalingConfiguration(d *schema.ResourceData, meta interface{}) err
 					return WrapError(err)
 				}
 
-				d.SetPartial("scaling_configuration_id")
+				//d.SetPartial("scaling_configuration_id")
 			}
 		} else {
 			if group.LifecycleState == string(Active) {
@@ -482,13 +492,14 @@ func enableEssScalingConfiguration(d *schema.ResourceData, meta interface{}) err
 				}
 			}
 		}
-		d.SetPartial("enable")
+		//d.SetPartial("enable")
 	}
 
 	return nil
 }
 
 func resourceApsaraStackEssScalingConfigurationRead(d *schema.ResourceData, meta interface{}) error {
+	waitSecondsIfWithTest(1)
 
 	client := meta.(*connectivity.ApsaraStackClient)
 	essService := EssService{client}
@@ -710,6 +721,8 @@ func buildApsaraStackEssScalingConfigurationArgs(d *schema.ResourceData, meta in
 				Size:               strconv.Itoa(pack["size"].(int)),
 				Category:           pack["category"].(string),
 				SnapshotId:         pack["snapshot_id"].(string),
+				Encrypted:          pack["encrypted"].(string),
+				KMSKeyId:           pack["kms_key_id"].(string),
 				DeleteWithInstance: strconv.FormatBool(pack["delete_with_instance"].(bool)),
 			}
 			createDataDisks = append(createDataDisks, dataDisk)

@@ -146,11 +146,10 @@ func resourceApsaraStackMongoDBInstance() *schema.Resource {
 			"tde_status": {
 				Type: schema.TypeString,
 				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
-					return old != "" || d.Get("engine_version").(string) < "4.0"
+					return old == "" && new == "disabled" || old == "enabled"
 				},
-				ValidateFunc: validation.StringInSlice([]string{"enabled"}, false),
+				ValidateFunc: validation.StringInSlice([]string{"enabled", "disabled"}, false),
 				Optional:     true,
-				ForceNew:     true,
 			},
 			"maintain_start_time": {
 				Type:     schema.TypeString,
@@ -280,6 +279,7 @@ func resourceApsaraStackMongoDBInstanceCreate(d *schema.ResourceData, meta inter
 }
 
 func resourceApsaraStackMongoDBInstanceRead(d *schema.ResourceData, meta interface{}) error {
+	waitSecondsIfWithTest(1)
 	client := meta.(*connectivity.ApsaraStackClient)
 	ddsService := MongoDBService{client}
 
@@ -298,7 +298,8 @@ func resourceApsaraStackMongoDBInstanceRead(d *schema.ResourceData, meta interfa
 	}
 	d.Set("backup_time", backupPolicy.PreferredBackupTime)
 	d.Set("backup_period", strings.Split(backupPolicy.PreferredBackupPeriod, ","))
-	d.Set("retention_period", backupPolicy.BackupRetentionPeriod)
+	retention_period, _ := strconv.Atoi(backupPolicy.BackupRetentionPeriod)
+	d.Set("retention_period", retention_period)
 
 	ips, err := ddsService.DescribeMongoDBSecurityIps(d.Id())
 	if err != nil {
@@ -306,13 +307,14 @@ func resourceApsaraStackMongoDBInstanceRead(d *schema.ResourceData, meta interfa
 	}
 	d.Set("security_ip_list", ips)
 
-	groupIp, err := ddsService.DescribeMongoDBSecurityGroupId(d.Id())
-	if err != nil {
-		return WrapError(err)
-	}
-	if len(groupIp.Items.RdsEcsSecurityGroupRel) > 0 {
-		d.Set("security_group_id", groupIp.Items.RdsEcsSecurityGroupRel[0].SecurityGroupId)
-	}
+	// 混合云不支持
+	//	groupIp, err := ddsService.DescribeMongoDBSecurityGroupId(d.Id())
+	//	if err != nil {
+	//		return WrapError(err)
+	//	}
+	//	if len(groupIp.Items.RdsEcsSecurityGroupRel) > 0 {
+	//		d.Set("security_group_id", groupIp.Items.RdsEcsSecurityGroupRel[0].SecurityGroupId)
+	//	}
 
 	d.Set("name", instance.DBInstanceDescription)
 	d.Set("engine_version", instance.EngineVersion)
@@ -346,7 +348,9 @@ func resourceApsaraStackMongoDBInstanceRead(d *schema.ResourceData, meta interfa
 	if err != nil {
 		return WrapError(err)
 	}
-	d.Set("tde_Status", tdeInfo.TDEStatus)
+	if !(d.Get("tde_status") == "" && tdeInfo.TDEStatus == "disabled") {
+		d.Set("tde_status", tdeInfo.TDEStatus)
+	}
 
 	d.Set("tags", ddsService.tagsInAttributeToMap(instance.Tags.Tag))
 	return nil
@@ -363,6 +367,7 @@ func resourceApsaraStackMongoDBInstanceUpdate(d *schema.ResourceData, meta inter
 		prePaidRequest.InstanceId = d.Id()
 		prePaidRequest.AutoPay = requests.NewBoolean(true)
 		prePaidRequest.Period = requests.NewInteger(d.Get("period").(int))
+		prePaidRequest.QueryParams = map[string]string{"AccessKeySecret": client.SecretKey, "Product": "dds", "Department": client.Department, "ResourceGroup": client.ResourceGroup}
 		raw, err := client.WithDdsClient(func(client *dds.Client) (interface{}, error) {
 			return client.TransformToPrePaid(prePaidRequest)
 		})
@@ -457,6 +462,7 @@ func resourceApsaraStackMongoDBInstanceUpdate(d *schema.ResourceData, meta inter
 		request := dds.CreateModifyDBInstanceDescriptionRequest()
 		request.DBInstanceId = d.Id()
 		request.DBInstanceDescription = d.Get("name").(string)
+		request.QueryParams = map[string]string{"AccessKeySecret": client.SecretKey, "Product": "dds", "Department": client.Department, "ResourceGroup": client.ResourceGroup}
 
 		raw, err := client.WithDdsClient(func(ddsClient *dds.Client) (interface{}, error) {
 			return ddsClient.ModifyDBInstanceDescription(request)
@@ -534,6 +540,7 @@ func resourceApsaraStackMongoDBInstanceUpdate(d *schema.ResourceData, meta inter
 		request.DBInstanceClass = d.Get("db_instance_class").(string)
 		request.DBInstanceStorage = strconv.Itoa(d.Get("db_instance_storage").(int))
 		request.ReplicationFactor = strconv.Itoa(d.Get("replication_factor").(int))
+		request.QueryParams = map[string]string{"AccessKeySecret": client.SecretKey, "Product": "dds", "Department": client.Department, "ResourceGroup": client.ResourceGroup}
 
 		// wait instance status is running before modifying
 		stateConf := BuildStateConf([]string{"DBInstanceClassChanging", "DBInstanceNetTypeChanging"}, []string{"Running"}, d.Timeout(schema.TimeoutUpdate), 1*time.Minute, ddsService.RdsMongodbDBInstanceStateRefreshFunc(d.Id(), []string{"Deleting"}))
@@ -573,6 +580,7 @@ func resourceApsaraStackMongoDBInstanceDelete(d *schema.ResourceData, meta inter
 
 	request := dds.CreateDeleteDBInstanceRequest()
 	request.DBInstanceId = d.Id()
+	request.QueryParams = map[string]string{"AccessKeySecret": client.SecretKey, "Product": "dds", "Department": client.Department, "ResourceGroup": client.ResourceGroup}
 
 	err := resource.Retry(10*time.Minute, func() *resource.RetryError {
 		raw, err := client.WithDdsClient(func(ddsClient *dds.Client) (interface{}, error) {

@@ -354,6 +354,25 @@ func (s *MongoDBService) DescribeMongoDBTDEInfo(id string) (*dds.DescribeDBInsta
 func (s *MongoDBService) DescribeDBInstanceSSL(id string) (*dds.DescribeDBInstanceSSLResponse, error) {
 	response := &dds.DescribeDBInstanceSSLResponse{}
 	request := dds.CreateDescribeDBInstanceSSLRequest()
+
+	err := resource.Retry(10*time.Minute, func() *resource.RetryError {
+		instance, err := s.DescribeMongoDBInstance(id)
+		if err != nil {
+			if IsExpectedErrors(err, []string{"InvalidDBInstanceId.NotFound"}) {
+				return resource.NonRetryableError(err)
+			}
+			return resource.RetryableError(err)
+		}
+		if instance.DBInstanceStatus == "SSLModifying" {
+			return resource.RetryableError(fmt.Errorf("SSLModifying"))
+		}
+		addDebug(request.GetActionName(), instance, request.RpcRequest, request)
+		return nil
+	})
+	if err != nil {
+		return response, WrapErrorf(err, DefaultErrorMsg, id, request.GetActionName(), ApsaraStackSdkGoERROR)
+	}
+
 	request.RegionId = s.client.RegionId
 	request.Headers = map[string]string{"RegionId": s.client.RegionId}
 	request.QueryParams = map[string]string{"AccessKeySecret": s.client.SecretKey, "Product": "dds", "Department": s.client.Department, "ResourceGroup": s.client.ResourceGroup}

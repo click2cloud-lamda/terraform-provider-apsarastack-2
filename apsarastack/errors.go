@@ -1,6 +1,8 @@
 package apsarastack
 
 import (
+	"github.com/alibabacloud-go/tea/tea"
+	"regexp"
 	"strings"
 
 	sls "github.com/aliyun/aliyun-log-go-sdk"
@@ -22,8 +24,10 @@ const (
 	NotFound                = "NotFound"
 	ResourceNotfound        = "ResourceNotfound"
 	InstanceNotFound        = "Instance.Notfound"
+	VSwitchIdNotFound       = "VSwitchId.Notfound"
 	MessageInstanceNotFound = "instance is not found"
 	Throttling              = "Throttling"
+	ServiceUnavailable      = "ServiceUnavailable"
 
 	// RAM Instance Not Found
 	RamInstanceNotFound        = "Forbidden.InstanceNotFound"
@@ -99,7 +103,38 @@ func NotFoundError(err error) bool {
 
 	return false
 }
+func NeedRetry(err error) bool {
+	if err == nil {
+		return false
+	}
 
+	postRegex := regexp.MustCompile("^Post [\"]*https://.*")
+	if postRegex.MatchString(err.Error()) {
+		return true
+	}
+
+	throttlingRegex := regexp.MustCompile("^Throttling.*")
+	codeRegex := regexp.MustCompile("^code: 5[\\d]{2}")
+
+	if e, ok := err.(*tea.SDKError); ok {
+		if strings.Contains(*e.Message, "code: 500, 您已开通过") {
+			return false
+		}
+		if *e.Code == ServiceUnavailable || *e.Code == "Rejected.Throttling" || throttlingRegex.MatchString(*e.Code) || codeRegex.MatchString(*e.Message) {
+			return true
+		}
+	}
+
+	if e, ok := err.(*errors.ServerError); ok {
+		return e.ErrorCode() == ServiceUnavailable || e.ErrorCode() == "Rejected.Throttling" || throttlingRegex.MatchString(e.ErrorCode()) || codeRegex.MatchString(e.Message())
+	}
+
+	if e, ok := err.(*common.Error); ok {
+		return e.Code == ServiceUnavailable || e.Code == "Rejected.Throttling" || throttlingRegex.MatchString(e.Code) || codeRegex.MatchString(e.Message)
+	}
+
+	return false
+}
 func IsExpectedErrors(err error, expectCodes []string) bool {
 	if err == nil {
 		return false
@@ -291,7 +326,15 @@ func WrapErrorf(cause error, msg string, args ...interface{}) error {
 	}
 	return WrapComplexError(cause, fmt.Errorf(msg, args...), filepath, line)
 }
-
+func GetNotFoundVPCError(str string) error {
+	return &ProviderError{
+		errorCode: VSwitchIdNotFound,
+		message:   str,
+	}
+}
+func GetNotVPCMessage() string {
+	return fmt.Sprintf("The VSwitchId is not found.")
+}
 func WrapComplexError(cause, err error, filepath string, fileline int) error {
 	return &ComplexError{
 		Cause: cause,
@@ -299,6 +342,17 @@ func WrapComplexError(cause, err error, filepath string, fileline int) error {
 		Path:  filepath,
 		Line:  fileline,
 	}
+}
+func IsExpectedErrorCodes(code string, errorCodes []string) bool {
+	if code == "" {
+		return false
+	}
+	for _, v := range errorCodes {
+		if v == code {
+			return true
+		}
+	}
+	return false
 }
 
 // A default message of ComplexError's Err. It is format to Resource <resource-id> <operation> Failed!!! <error source>
@@ -314,3 +368,4 @@ const IdMsg = "Resource id：%s "
 const DefaultTimeoutMsg = "Resource %s %s Timeout!!! %s"
 const DefaultDebugMsg = "\n*************** %s Response *************** \n%s\n%s******************************\n\n"
 const FailedToReachTargetStatus = "Failed to reach target status. Current status is %s."
+const FailedGetAttributeMsg = "Getting resource %s attribute by path %s failed!!! Body: %v."

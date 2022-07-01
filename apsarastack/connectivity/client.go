@@ -2,6 +2,7 @@ package connectivity
 
 import (
 	"encoding/json"
+	rpc "github.com/alibabacloud-go/tea-rpc/client"
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk"
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/endpoints"
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
@@ -14,6 +15,7 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/cr"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/cr_ee"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/dds"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/edas"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/elasticsearch"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ess"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/gpdb"
@@ -52,6 +54,8 @@ import (
 )
 
 type ApsaraStackClient struct {
+	SourceIp          string
+	SecureTransport   string
 	Region            Region
 	RegionId          string
 	Domain            string
@@ -60,9 +64,12 @@ type ApsaraStackClient struct {
 	Department        string
 	ResourceGroup     string
 	Config            *Config
+	teaSdkConfig      rpc.Config
 	accountId         string
+	roleId            int
 	ecsconn           *ecs.Client
 	accountIdMutex    sync.RWMutex
+	roleIdMutex       sync.RWMutex
 	vpcconn           *vpc.Client
 	slbconn           *slb.Client
 	csconn            *cs.Client
@@ -86,10 +93,15 @@ type ApsaraStackClient struct {
 	logconn           *sls.Client
 	logpopconn        *slsPop.Client
 	dnsconn           *alidns.Client
+	edasconn          *edas.Client
 	creeconn          *cr_ee.Client
 	crconn            *cr.Client
 	cmsconn           *cms.Client
 	maxcomputeconn    *maxcompute.Client
+	//otsconn                      *ots.Client
+	OtsInstanceName string
+	//tablestoreconnByInstanceName map[string]*tablestore.TableStoreClient
+	//dhconn                       datahub.DataHubApi
 }
 
 const (
@@ -111,9 +123,10 @@ type ApiVersion string
 
 // The main version number that is being run at the moment.
 
-var ProviderVersion = "1.0.9"
+var ProviderVersion = "1.0.16"
 var TerraformVersion = strings.TrimSuffix(schema.Provider{}.TerraformVersion, "-dev")
 var goSdkMutex = sync.RWMutex{} // The Go SDK is not thread-safe
+var loadSdkEndpointMutex = sync.Mutex{}
 
 // Client for ApsaraStackClient
 func (c *Config) Client() (*ApsaraStackClient, error) {
@@ -125,9 +138,13 @@ func (c *Config) Client() (*ApsaraStackClient, error) {
 			return nil, err
 		}
 	}
-
+	teaSdkConfig, err := c.getTeaDslSdkConfig(true)
+	if err != nil {
+		return nil, err
+	}
 	return &ApsaraStackClient{
 		Config:        c,
+		teaSdkConfig:  teaSdkConfig,
 		Region:        c.Region,
 		RegionId:      c.RegionId,
 		AccessKey:     c.AccessKey,
@@ -720,6 +737,101 @@ func (client *ApsaraStackClient) WithKmsClient(do func(*kms.Client) (interface{}
 	}
 	return do(client.kmsconn)
 }
+func (client *ApsaraStackClient) RoleIds() (int, error) {
+	client.roleIdMutex.Lock()
+	defer client.roleIdMutex.Unlock()
+
+	if client.roleId == 0 {
+		log.Printf("[DEBUG] role_ids not provided, attempting to retrieve it automatically...")
+		roleId, err := client.GetCallerDefaultRole()
+		if err != nil {
+			return 0, err
+		}
+		if roleId == 0 {
+			return 0, fmt.Errorf("caller identity doesn't contain default RoleId")
+		}
+		client.roleId = roleId
+	}
+	return client.roleId, nil
+}
+func (client *ApsaraStackClient) GetCallerDefaultRole() (int, error) {
+
+	resp, err := client.GetCallerInfo()
+	response := &RoleId{}
+	err = json.Unmarshal(resp.GetHttpContentBytes(), response)
+	roleId := response.Data.DefaultRole.Id
+
+	if roleId == 0 {
+		return 0, fmt.Errorf("default roleId not found")
+	}
+	return roleId, err
+}
+func (client *ApsaraStackClient) GetCallerInfo() (*responses.BaseResponse, error) {
+
+	endpoint := client.Config.AscmEndpoint
+	if endpoint == "" {
+		return nil, fmt.Errorf("unable to initialize the ascm client: endpoint or domain is not provided for ascm service")
+	}
+	if endpoint != "" {
+		endpoints.AddEndpointMapping(client.Config.RegionId, string(ASCMCode), endpoint)
+	}
+	ascmClient, err := sdk.NewClientWithAccessKey(client.Config.RegionId, client.Config.AccessKey, client.Config.SecretKey)
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize the ascm client: %#v", err)
+	}
+
+	ascmClient.AppendUserAgent(Terraform, TerraformVersion)
+	ascmClient.AppendUserAgent(Provider, ProviderVersion)
+	ascmClient.AppendUserAgent(Module, client.Config.ConfigurationSource)
+	ascmClient.SetHTTPSInsecure(client.Config.Insecure)
+	ascmClient.Domain = endpoint
+	if client.Config.Proxy != "" {
+		ascmClient.SetHttpProxy(client.Config.Proxy)
+	}
+	if client.Config.Department == "" || client.Config.ResourceGroup == "" {
+		return nil, fmt.Errorf("unable to initialize the ascm client: department or resource_group is not provided")
+	}
+	request := requests.NewCommonRequest()
+	if strings.ToLower(client.Config.Protocol) == "https" {
+		request.Scheme = "https"
+	} else {
+		request.Scheme = "http"
+	}
+	if client.Config.Insecure {
+		request.SetHTTPSInsecure(client.Config.Insecure)
+	}
+	request.Method = "GET"         // Set request method
+	request.Product = "ascm"       // Specify product
+	request.Domain = endpoint      // Location Service will not be enabled if the host is specified. For example, service with a Certification type-Bearer Token should be specified
+	request.Version = "2019-05-10" // Specify product version
+	request.ApiName = "GetUserInfo"
+	request.QueryParams = map[string]string{
+		"AccessKeySecret":  client.Config.SecretKey,
+		"Product":          "ascm",
+		"Department":       client.Config.Department,
+		"ResourceGroup":    client.Config.ResourceGroup,
+		"RegionId":         client.RegionId,
+		"Action":           "GetAllNavigationInfo",
+		"Version":          "2019-05-10",
+		"SignatureVersion": "1.0",
+	}
+	resp := responses.BaseResponse{}
+	request.TransToAcsRequest()
+	err = ascmClient.DoAction(request, &resp)
+	if err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+type RoleId struct {
+	Data struct {
+		DefaultRole struct {
+			Id int `json:"id"`
+		} `json:"defaultRole"`
+	} `json:"data"`
+}
+
 func (client *ApsaraStackClient) GetCallerIdentity() (string, error) {
 
 	endpoint := client.Config.AscmEndpoint
@@ -1064,9 +1176,9 @@ func (client *ApsaraStackClient) WithLogClient(do func(*sls.Client) (interface{}
 			os.Setenv("http_proxy", client.Config.Proxy)
 		}
 		client.logconn = &sls.Client{
-			AccessKeyID:     client.Config.AccessKey,
-			AccessKeySecret: client.Config.SecretKey,
-			Endpoint:        endpoint,
+			AccessKeyID:     client.Config.OrganizationAccessKey,
+			AccessKeySecret: client.Config.OrganizationSecretKey,
+			Endpoint:        client.Config.SLSOpenAPIEndpoint,
 			SecurityToken:   client.Config.SecurityToken,
 			UserAgent:       client.getUserAgent(),
 		}
@@ -1097,6 +1209,33 @@ func (client *ApsaraStackClient) WithLogPopClient(do func(*slsPop.Client) (inter
 	}
 
 	return do(client.logpopconn)
+}
+
+func (client *ApsaraStackClient) WithEdasClient(do func(*edas.Client) (interface{}, error)) (interface{}, error) {
+	// Initialize the edas client if necessary
+	if client.edasconn == nil {
+		endpoint := client.Config.EdasEndpoint
+		if endpoint == "" {
+			endpoint = loadEndpoint(client.Config.RegionId, EDASCode)
+		}
+		if endpoint != "" {
+			endpoints.AddEndpointMapping(client.Config.RegionId, string(EDASCode), endpoint)
+		}
+		edasconn, err := edas.NewClientWithOptions(client.Config.RegionId, client.getSdkConfig().WithTimeout(time.Duration(60)*time.Second), client.Config.getAuthCredential(true))
+		if err != nil {
+			return nil, fmt.Errorf("unable to initialize the ALIKAFKA client: %#v", err)
+		}
+		edasconn.SetReadTimeout(time.Duration(client.Config.ClientReadTimeout) * time.Millisecond)
+		edasconn.SetConnectTimeout(time.Duration(client.Config.ClientConnectTimeout) * time.Millisecond)
+		edasconn.SourceIp = client.Config.SourceIp
+		edasconn.SecureTransport = client.Config.SecureTransport
+		edasconn.AppendUserAgent(Terraform, TerraformVersion)
+		edasconn.AppendUserAgent(Provider, ProviderVersion)
+		edasconn.AppendUserAgent(Module, client.Config.ConfigurationSource)
+		client.edasconn = edasconn
+	}
+
+	return do(client.edasconn)
 }
 
 func (client *ApsaraStackClient) WithCrEEClient(do func(*cr_ee.Client) (interface{}, error)) (interface{}, error) {
@@ -1236,4 +1375,152 @@ func (client *ApsaraStackClient) WithMaxComputeClient(do func(*maxcompute.Client
 	}
 
 	return do(client.maxcomputeconn)
+}
+func (client *ApsaraStackClient) NewEcsClient() (*rpc.Client, error) {
+	productCode := "ecs"
+	endpoint := client.Config.EcsEndpoint
+	if v, ok := client.Config.Endpoints[productCode]; !ok || v.(string) == "" {
+		if err := client.loadEndpoint(productCode); err != nil {
+			return nil, err
+		}
+	}
+	if v, ok := client.Config.Endpoints[productCode]; ok && v.(string) != "" {
+		endpoint = v.(string)
+	}
+	if endpoint == "" {
+		return nil, fmt.Errorf("[ERROR] missing the product %s endpoint.", productCode)
+	}
+
+	sdkConfig := client.teaSdkConfig
+	sdkConfig.SetEndpoint(endpoint).SetReadTimeout(60000)
+
+	conn, err := rpc.NewClient(&sdkConfig)
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize the %s client: %#v", productCode, err)
+	}
+
+	return conn, nil
+}
+func (client *ApsaraStackClient) NewRosClient() (*rpc.Client, error) {
+	productCode := "ros"
+	endpoint := client.Config.RosEndpoint
+	if v, ok := client.Config.Endpoints[productCode]; !ok || v.(string) == "" {
+		if err := client.loadEndpoint(productCode); err != nil {
+			return nil, err
+		}
+	}
+	if v, ok := client.Config.Endpoints[productCode]; ok && v.(string) != "" {
+		endpoint = v.(string)
+	}
+	if endpoint == "" {
+		return nil, fmt.Errorf("[ERROR] missing the product %s endpoint.", productCode)
+	}
+	sdkConfig := client.teaSdkConfig
+	sdkConfig.SetEndpoint(endpoint)
+	conn, err := rpc.NewClient(&sdkConfig)
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize the %s client: %#v", productCode, err)
+	}
+	return conn, nil
+}
+
+func (client *ApsaraStackClient) NewDmsenterpriseClient() (*rpc.Client, error) {
+	productCode := "dmsenterprise"
+	endpoint := client.Config.DmsEnterpriseEndpoint
+	if v, ok := client.Config.Endpoints[productCode]; !ok || v.(string) == "" {
+		if err := client.loadEndpoint(productCode); err != nil {
+			endpoint = "dms-enterprise.aliyuncs.com"
+			client.Config.Endpoints[productCode] = endpoint
+			log.Printf("[ERROR] loading %s endpoint got an error: %#v. Using the central endpoint %s instead.", productCode, err, endpoint)
+		}
+	}
+	if v, ok := client.Config.Endpoints[productCode]; ok && v.(string) != "" {
+		endpoint = v.(string)
+	}
+	if endpoint == "" {
+		return nil, fmt.Errorf("[ERROR] missing the product %s endpoint.", productCode)
+	}
+	sdkConfig := client.teaSdkConfig
+	sdkConfig.SetEndpoint(endpoint)
+	conn, err := rpc.NewClient(&sdkConfig)
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize the %s client: %#v", productCode, err)
+	}
+	return conn, nil
+}
+func (client *ApsaraStackClient) NewQuickbiClient() (*rpc.Client, error) {
+	productCode := "quickbi"
+	endpoint := client.Config.QuickbiEndpoint
+	//endpoint := "quickbi-public.inter.env202.shuguang.com"
+	if v, ok := client.Config.Endpoints[productCode]; !ok || v.(string) == "" {
+		if err := client.loadEndpoint(productCode); err != nil {
+			endpoint = fmt.Sprintf("quickbi.%s.aliyuncs.com", client.Config.RegionId)
+			client.Config.Endpoints[productCode] = endpoint
+			log.Printf("[ERROR] loading %s endpoint got an error: %#v. Using the endpoint %s instead.", productCode, err, endpoint)
+		}
+	}
+	if v, ok := client.Config.Endpoints[productCode]; ok && v.(string) != "" {
+		endpoint = v.(string)
+	}
+	if endpoint == "" {
+		return nil, fmt.Errorf("[ERROR] missing the product %s endpoint.", productCode)
+	}
+	sdkConfig := client.teaSdkConfig
+	sdkConfig.SetEndpoint(endpoint)
+	conn, err := rpc.NewClient(&sdkConfig)
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize the %s client: %#v", productCode, err)
+	}
+	return conn, nil
+}
+func (client *ApsaraStackClient) NewAscmClient() (*rpc.Client, error) {
+	productCode := "ascm"
+	endpoint := client.Config.AscmEndpoint
+	if endpoint == "" {
+		if v, ok := client.Config.Endpoints[productCode]; !ok || v.(string) == "" {
+			if err := client.loadEndpoint(productCode); err != nil {
+				endpoint = fmt.Sprintf("eds-user.%s.aliyuncs.com", client.Config.RegionId)
+				client.Config.Endpoints[productCode] = endpoint
+				log.Printf("[ERROR] loading %s endpoint got an error: %#v. Using the endpoint %s instead.", productCode, err, endpoint)
+			}
+		}
+		if v, ok := client.Config.Endpoints[productCode]; ok && v.(string) != "" {
+			endpoint = v.(string)
+		}
+		if endpoint == "" {
+			return nil, fmt.Errorf("[ERROR] missing the product %s endpoint.", productCode)
+		}
+	}
+	sdkConfig := client.teaSdkConfig
+	sdkConfig.SetEndpoint(endpoint)
+	conn, err := rpc.NewClient(&sdkConfig)
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize the %s client: %#v", productCode, err)
+	}
+	return conn, nil
+}
+
+func (client *ApsaraStackClient) NewOdpsClient() (*rpc.Client, error) {
+	productCode := "odps"
+	endpoint := client.Config.MaxComputeEndpoint
+	if endpoint == "" {
+		if v, ok := client.Config.Endpoints[productCode]; !ok || v.(string) == "" {
+			if err := client.loadEndpoint(productCode); err != nil {
+				return nil, err
+			}
+		}
+		if v, ok := client.Config.Endpoints[productCode]; ok && v.(string) != "" {
+			endpoint = v.(string)
+		}
+	}
+	if endpoint == "" {
+		return nil, fmt.Errorf("[ERROR] missing the product %s endpoint.", productCode)
+	}
+	sdkConfig := client.teaSdkConfig
+	sdkConfig.SetEndpoint(endpoint)
+	conn, err := rpc.NewClient(&sdkConfig)
+	if err != nil {
+		return nil, fmt.Errorf("unable to initialize the %s client: %#v", productCode, err)
+	}
+	return conn, nil
 }

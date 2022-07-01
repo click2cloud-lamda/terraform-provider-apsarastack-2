@@ -2,6 +2,7 @@ package apsarastack
 
 import (
 	"fmt"
+	"log"
 	"reflect"
 	"strings"
 	"time"
@@ -19,52 +20,29 @@ type EssService struct {
 func (s *EssService) DescribeEssAlarm(id string) (alarm ess.Alarm, err error) {
 	request := ess.CreateDescribeAlarmsRequest()
 	request.RegionId = s.client.RegionId
+	request.Domain = s.client.Domain
 	request.Headers = map[string]string{"RegionId": s.client.RegionId}
-	request.QueryParams = map[string]string{"AccessKeySecret": s.client.SecretKey, "Product": "ess", "Department": s.client.Department, "ResourceGroup": s.client.ResourceGroup}
+	request.QueryParams = map[string]string{"AccessKeySecret": s.client.SecretKey, "Product": "Ess", "Department": s.client.Department, "ResourceGroup": s.client.ResourceGroup}
 	request.AlarmTaskId = id
 	if strings.ToLower(s.client.Config.Protocol) == "https" {
 		request.Scheme = "https"
 	} else {
 		request.Scheme = "http"
 	}
-	request.MetricType = "system"
-	Alarms, err := s.client.WithEssClient(func(essClient *ess.Client) (interface{}, error) {
+
+	raw, err := s.client.WithEssClient(func(essClient *ess.Client) (interface{}, error) {
 		return essClient.DescribeAlarms(request)
 	})
 	if err != nil {
 		return alarm, WrapErrorf(err, DefaultErrorMsg, id, request.GetActionName(), ApsaraStackSdkGoERROR)
 	}
-	addDebug(request.GetActionName(), Alarms, request.RpcRequest, request)
-	AlarmsResponse, _ := Alarms.(*ess.DescribeAlarmsResponse)
+	addDebug(request.GetActionName(), raw, request)
+	AlarmsResponse, _ := raw.(*ess.DescribeAlarmsResponse)
+	log.Printf("checking describe response: %v", AlarmsResponse)
 	systemAlarms := AlarmsResponse.AlarmList.Alarm
 
 	if len(systemAlarms) > 0 {
 		return systemAlarms[0], nil
-	}
-
-	AlarmsRequest := ess.CreateDescribeAlarmsRequest()
-	AlarmsRequest.RegionId = s.client.RegionId
-	AlarmsRequest.Headers = map[string]string{"RegionId": s.client.RegionId}
-	AlarmsRequest.QueryParams = map[string]string{"AccessKeySecret": s.client.SecretKey, "Product": "ess", "Department": s.client.Department, "ResourceGroup": s.client.ResourceGroup}
-	if strings.ToLower(s.client.Config.Protocol) == "https" {
-		AlarmsRequest.Scheme = "https"
-	} else {
-		AlarmsRequest.Scheme = "http"
-	}
-	AlarmsRequest.AlarmTaskId = id
-	AlarmsRequest.MetricType = "custom"
-	raw, err := s.client.WithEssClient(func(essClient *ess.Client) (interface{}, error) {
-		return essClient.DescribeAlarms(AlarmsRequest)
-	})
-	if err != nil {
-		return alarm, WrapErrorf(err, DefaultErrorMsg, id, AlarmsRequest.GetActionName(), ApsaraStackSdkGoERROR)
-	}
-	addDebug(AlarmsRequest.GetActionName(), raw, AlarmsRequest.RpcRequest, AlarmsRequest)
-	response, _ := raw.(*ess.DescribeAlarmsResponse)
-	customAlarms := response.AlarmList.Alarm
-
-	if len(customAlarms) > 0 {
-		return customAlarms[0], nil
 	}
 	return alarm, WrapErrorf(Error(GetNotFoundMessage("EssAlarm", id)), NotFoundMsg, ProviderERROR)
 }
@@ -180,7 +158,9 @@ func (s *EssService) WaitForEssNotification(id string, status Status, timeout in
 
 func (s *EssService) DescribeEssScalingGroup(id string) (group ess.ScalingGroup, err error) {
 	request := ess.CreateDescribeScalingGroupsRequest()
-	request.ScalingGroupId1 = id
+	var ids []string
+	ids = append(ids, id)
+	request.ScalingGroupId = &ids
 	request.RegionId = s.client.RegionId
 	if strings.ToLower(s.client.Config.Protocol) == "https" {
 		request.Scheme = "https"
@@ -209,7 +189,10 @@ func (s *EssService) DescribeEssScalingGroup(id string) (group ess.ScalingGroup,
 
 func (s *EssService) DescribeEssScalingConfiguration(id string) (config ess.ScalingConfiguration, err error) {
 	request := ess.CreateDescribeScalingConfigurationsRequest()
-	request.ScalingConfigurationId1 = id
+	var ids []string
+	ids = append(ids, id)
+	request.ScalingConfigurationId = &ids
+	//request.ScalingConfigurationId1 = id
 	request.RegionId = s.client.RegionId
 	if strings.ToLower(s.client.Config.Protocol) == "https" {
 		request.Scheme = "https"
@@ -329,7 +312,10 @@ func (s *EssService) flattenVserverGroupList(vServerGroups []ess.VServerGroup) [
 
 func (s *EssService) DescribeEssScalingRule(id string) (rule ess.ScalingRule, err error) {
 	request := ess.CreateDescribeScalingRulesRequest()
-	request.ScalingRuleId1 = id
+	var ids []string
+	ids = append(ids, id)
+	request.ScalingRuleId = &ids
+	//request.ScalingRuleId1 = id
 	if strings.ToLower(s.client.Config.Protocol) == "https" {
 		request.Scheme = "https"
 	} else {
@@ -383,7 +369,10 @@ func (s *EssService) WaitForEssScalingRule(id string, status Status, timeout int
 
 func (s *EssService) DescribeEssScheduledTask(id string) (task ess.ScheduledTask, err error) {
 	request := ess.CreateDescribeScheduledTasksRequest()
-	request.ScheduledTaskId1 = id
+	var ids []string
+	ids = append(ids, id)
+	request.ScheduledTaskId = &ids
+	//request.ScheduledTaskId1 = id
 	if strings.ToLower(s.client.Config.Protocol) == "https" {
 		request.Scheme = "https"
 	} else {
@@ -671,6 +660,7 @@ func (s *EssService) WaitForEssAlarm(id string, status Status, timeout int) erro
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 	for {
 		object, err := s.DescribeEssAlarm(id)
+		log.Printf("object response:%v", object.State)
 		if err != nil {
 			if NotFoundError(err) {
 				if status == Deleted {

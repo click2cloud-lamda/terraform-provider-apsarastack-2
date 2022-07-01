@@ -117,7 +117,7 @@ func resourceApsaraStackInstance() *schema.Resource {
 				Default:      DiskCloudEfficiency,
 				Optional:     true,
 				ForceNew:     true,
-				ValidateFunc: validation.StringInSlice([]string{"all", "cloud", "ephemeral_ssd", "cloud_efficiency", "cloud_ssd"}, false),
+				ValidateFunc: validation.StringInSlice([]string{"all", "cloud", "ephemeral_ssd", "cloud_efficiency", "cloud_ssd", "cloud_pperf", "cloud_sperf"}, false),
 			},
 			"system_disk_size": {
 				Type:     schema.TypeInt,
@@ -156,7 +156,7 @@ func resourceApsaraStackInstance() *schema.Resource {
 						"category": {
 							Type:         schema.TypeString,
 							Optional:     true,
-							ValidateFunc: validation.StringInSlice([]string{"all", "cloud", "ephemeral_ssd", "cloud_efficiency", "cloud_ssd"}, false),
+							ValidateFunc: validation.StringInSlice([]string{"all", "cloud", "ephemeral_ssd", "cloud_efficiency", "cloud_ssd", "cloud_pperf", "cloud_sperf"}, false),
 							Default:      DiskCloudEfficiency,
 							ForceNew:     true,
 						},
@@ -770,8 +770,9 @@ func buildApsaraStackInstanceArgs(d *schema.ResourceData, meta interface{}) (*ec
 		request.SecurityEnhancementStrategy = v.(string)
 	}
 
-	if v, ok := d.GetOk("tags"); ok && len(v.(map[string]interface{})) > 0 {
-		tags := make([]ecs.RunInstancesTag, len(v.(map[string]interface{})))
+	v, ok := d.GetOk("tags")
+	if ok && len(v.(map[string]interface{})) > 0 {
+		tags := make([]ecs.RunInstancesTag, 0)
 		for key, value := range v.(map[string]interface{}) {
 			tags = append(tags, ecs.RunInstancesTag{
 				Key:   key,

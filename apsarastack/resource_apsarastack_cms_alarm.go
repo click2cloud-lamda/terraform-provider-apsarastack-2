@@ -204,6 +204,7 @@ func resourceApsaraStackCmsAlarmCreate(d *schema.ResourceData, meta interface{})
 	request.Headers = map[string]string{"RegionId": client.RegionId}
 	request.QueryParams = map[string]string{"AccessKeySecret": client.SecretKey, "Product": "cms", "Department": client.Department, "ResourceGroup": client.ResourceGroup}
 	request.ContactGroups = strings.Join(expandStringList(d.Get("contact_groups").([]interface{})), ",")
+	request.Webhook = d.Get("webhook").(string)
 	if v, ok := d.GetOk("escalations_critical"); ok && len(v.([]interface{})) != 0 {
 		for _, val := range v.([]interface{}) {
 			val := val.(map[string]interface{})
@@ -242,7 +243,7 @@ func resourceApsaraStackCmsAlarmCreate(d *schema.ResourceData, meta interface{})
 		end, endOk := d.GetOk("end_time")
 		if startOk && endOk && end.(int) > 0 {
 			// The EffectiveInterval valid value between 00:00 and 23:59
-			request.EffectiveInterval = fmt.Sprintf("%d:00-%d:59", start.(int), end.(int)-1)
+			request.EffectiveInterval = fmt.Sprintln(start.(int), ":00-", end.(int)-1, ":59")
 		}
 	}
 	request.SilenceTime = requests.NewInteger(d.Get("silence_time").(int))
@@ -270,25 +271,24 @@ func resourceApsaraStackCmsAlarmCreate(d *schema.ResourceData, meta interface{})
 			request.Resources = string(bytes[:])
 		}
 	}
-
 	// make a request
 	nrequest := requests.NewCommonRequest()
 	nrequest.RegionId = client.RegionId
 	if strings.ToLower(client.Config.Protocol) == "https" {
-		request.Scheme = "https"
+		nrequest.Scheme = "https"
 	} else {
-		request.Scheme = "http"
+		nrequest.Scheme = "http"
 	}
 	nrequest.Method = "POST"
 	nrequest.Product = "cms"
 	nrequest.Domain = client.Domain
 	nrequest.Version = "2019-01-01"
 	nrequest.ApiName = "PutResourceMetricRule"
-
+	nrequest.QueryParams = request.QueryParams
 	nrequest.Headers = map[string]string{"RegionId": client.RegionId}
 	nrequest.QueryParams = map[string]string{
 		"AccessKeySecret":                client.SecretKey,
-		"Product":                        "cms",
+		"Product":                        "Cms",
 		"Department":                     client.Department,
 		"ResourceGroup":                  client.ResourceGroup,
 		"RegionId":                       client.RegionId,
@@ -318,16 +318,20 @@ func resourceApsaraStackCmsAlarmCreate(d *schema.ResourceData, meta interface{})
 		"SilenceTime":                             fmt.Sprint(request.SilenceTime),
 		"SignatureVersion":                        "1.0",
 		"Period":                                  request.Period,
+		"Webhook":                                 request.Webhook,
+		"EmailSubject":                            "",
+		"Unit":                                    "%",
+		"GroupName":                               "",
+		"GroupId":                                 "",
 	}
-
 	raw, err := client.WithEcsClient(func(cmsClient *ecs.Client) (interface{}, error) {
 		return cmsClient.ProcessCommonRequest(nrequest)
 	})
 
-	log.Printf("testing cms %v", raw)
 	if err != nil {
 		return fmt.Errorf("Putting alarm got an error: %#v", err)
 	}
+	log.Printf("Something else %v", raw)
 	d.SetPartial("name")
 	d.SetPartial("period")
 	d.SetPartial("statistics")
@@ -423,11 +427,12 @@ func resourceApsaraStackCmsAlarmRead(d *schema.ResourceData, meta interface{}) e
 	}
 
 	d.Set("statistics", alarm.Escalations.Critical.Statistics)
-	oper := convertOperator(alarm.Escalations.Critical.ComparisonOperator)
-	if oper == MoreThan && d.Get("operator").(string) == Equal {
-		oper = Equal
-	}
-	d.Set("operator", oper)
+	//oper := convertOperator(alarm.Escalations.Critical.ComparisonOperator)
+	//if oper == MoreThan && d.Get("operator").(string) == Equal {
+	//	oper = Equal
+	//}
+	//d.Set("operator", oper)
+	d.Set("webhook", alarm.Webhook)
 	d.Set("threshold", alarm.Escalations.Critical.Threshold)
 	if alarm.Escalations.Critical.Times != "" {
 		if count, err := strconv.Atoi(alarm.Escalations.Critical.Times); err != nil {
@@ -454,43 +459,34 @@ func resourceApsaraStackCmsAlarmRead(d *schema.ResourceData, meta interface{}) e
 	}
 
 	escalationsWarn := make([]map[string]interface{}, 1)
-	if alarm.Escalations.Warn.Times != "" {
-		if count, err := strconv.Atoi(alarm.Escalations.Warn.Times); err != nil {
-			return WrapError(err)
-		} else {
-			mappingWarn := map[string]interface{}{
-				"statistics":          alarm.Escalations.Warn.Statistics,
-				"comparison_operator": convertOperator(alarm.Escalations.Warn.ComparisonOperator),
-				"threshold":           alarm.Escalations.Warn.Threshold,
-				"times":               count,
-			}
-			escalationsWarn[0] = mappingWarn
-			d.Set("escalations_warn", escalationsWarn)
+	if alarm.Escalations.Warn.Times != 0 {
+		count := alarm.Escalations.Warn.Times
+		mappingWarn := map[string]interface{}{
+			"statistics":          alarm.Escalations.Warn.Statistics,
+			"comparison_operator": convertOperator(alarm.Escalations.Warn.ComparisonOperator),
+			"threshold":           alarm.Escalations.Warn.Threshold,
+			"times":               count,
 		}
+		escalationsWarn[0] = mappingWarn
+		d.Set("escalations_warn", escalationsWarn)
+
 	}
 
 	escalationsInfo := make([]map[string]interface{}, 1)
-	if alarm.Escalations.Info.Times != "" {
-		if count, err := strconv.Atoi(alarm.Escalations.Info.Times); err != nil {
-			return WrapError(err)
-		} else {
-			mappingInfo := map[string]interface{}{
-				"statistics":          alarm.Escalations.Info.Statistics,
-				"comparison_operator": convertOperator(alarm.Escalations.Info.ComparisonOperator),
-				"threshold":           alarm.Escalations.Info.Threshold,
-				"times":               count,
-			}
-			escalationsInfo[0] = mappingInfo
-			d.Set("escalations_info", escalationsInfo)
+	if alarm.Escalations.Info.Times != 0 {
+		count := alarm.Escalations.Info.Times
+		mappingInfo := map[string]interface{}{
+			"statistics":          alarm.Escalations.Info.Statistics,
+			"comparison_operator": convertOperator(alarm.Escalations.Info.ComparisonOperator),
+			"threshold":           alarm.Escalations.Info.Threshold,
+			"times":               count,
 		}
+		escalationsInfo[0] = mappingInfo
+		d.Set("escalations_info", escalationsInfo)
 	}
 
 	d.Set("effective_interval", alarm.EffectiveInterval)
-	if silence, err := strconv.Atoi(alarm.SilenceTime); err != nil {
-		return fmt.Errorf("Atoi SilenceTime got an error: %#v.", err)
-	} else {
-		d.Set("silence_time", silence)
-	}
+	d.Set("silence_time", alarm.SilenceTime)
 	d.Set("status", alarm.AlertState)
 	d.Set("enabled", alarm.EnableState)
 	d.Set("contact_groups", strings.Split(alarm.ContactGroups, ","))
@@ -513,41 +509,47 @@ func resourceApsaraStackCmsAlarmUpdate(d *schema.ResourceData, meta interface{})
 
 func resourceApsaraStackCmsAlarmDelete(d *schema.ResourceData, meta interface{}) error {
 	client := meta.(*connectivity.ApsaraStackClient)
-	cmsService := CmsService{client}
-	parts, err := ParseResourceId(d.Id(), 2)
-	if err != nil {
-		return WrapError(err)
+
+	id := strings.Split(d.Id(), ":")
+	request := requests.NewCommonRequest()
+	request.Method = "POST"
+	request.Product = "Cms"
+	request.Version = "2019-01-01"
+	if strings.ToLower(client.Config.Protocol) == "https" {
+		request.Scheme = "https"
+	} else {
+		request.Scheme = "http"
 	}
-	request := cms.CreateDeleteMetricRulesRequest()
+	request.ServiceCode = "Cms"
+	request.ApiName = "DeleteMetricRules"
 	request.Headers = map[string]string{"RegionId": client.RegionId}
-	request.QueryParams = map[string]string{"AccessKeySecret": client.SecretKey, "Product": "cms", "Department": client.Department, "ResourceGroup": client.ResourceGroup}
+	request.QueryParams = map[string]string{"AccessKeyId": client.AccessKey, "AccessKeySecret": client.SecretKey, "Product": "Cms", "RegionId": client.RegionId, "Action": "DeleteMetricRules", "Version": "2019-01-01", "Department": client.Department, "ResourceGroup": client.ResourceGroup}
+	request.RegionId = client.RegionId
+	request.Domain = client.Domain
+	request.Headers = map[string]string{"RegionId": client.RegionId}
+	request.QueryParams = map[string]string{
+		"Product":         "Cms",
+		"Action":          "DeleteMetricRules",
+		"Version":         "2019-01-01",
+		"RegionId":        client.RegionId,
+		"AccessKeyId":     client.AccessKey,
+		"AccessKeySecret": client.SecretKey,
+		"Department":      client.Department,
+		"ResourceGroup":   client.ResourceGroup,
+		"Id.1":            id[0],
+	}
+	log.Printf("deletealarm007 request :%v", request)
 
-	request.Id = &[]string{parts[0]}
-
-	wait := incrementalWait(1*time.Second, 2*time.Second)
-	return resource.Retry(10*time.Minute, func() *resource.RetryError {
-		_, err := client.WithCmsClient(func(cmsClient *cms.Client) (interface{}, error) {
-			return cmsClient.DeleteMetricRules(request)
-		})
-
-		if err != nil {
-			if IsExpectedErrors(err, []string{ThrottlingUser}) {
-				wait()
-				return resource.RetryableError(err)
-			}
-			return resource.NonRetryableError(fmt.Errorf("Deleting alarm rule got an error: %#v", err))
-		}
-
-		_, err = cmsService.DescribeCmsAlarm(d.Id())
-		if err != nil {
-			if NotFoundError(err) {
-				return nil
-			}
-			return resource.NonRetryableError(fmt.Errorf("Describe alarm rule got an error: %#v", err))
-		}
-
-		return resource.RetryableError(fmt.Errorf("Deleting alarm rule got an error: %#v", err))
+	raw, err := client.WithEcsClient(func(cmsClient *ecs.Client) (interface{}, error) {
+		return cmsClient.ProcessCommonRequest(request)
 	})
+
+	log.Printf("testing cms %v", raw)
+	if err != nil {
+		return fmt.Errorf("deleting alarm got an error: %#v", err)
+	}
+	return nil
+
 }
 
 func convertOperator(operator string) string {

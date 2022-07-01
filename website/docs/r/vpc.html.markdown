@@ -20,7 +20,7 @@ Basic Usage
 ```
 resource "apsarastack_vpc" "vpc" {
   name       = "tf_test_foo"
-  cidr_block = "${var.cidr_block}"
+  cidr_block     = "172.16.0.0/12"
 }
 ```
 
@@ -29,9 +29,15 @@ resource "apsarastack_vpc" "vpc" {
 
 The following arguments are supported:
 
-* `cidr_block` - (Required, ForceNew) The CIDR block for the VPC.
-* `name` - (Optional) The name of the VPC. Defaults to null.
+* `cidr_block` - (Required, ForceNew) The CIDR block for the VPC. The `cidr_block` is Optional and default value is `172.16.0.0/12`.
+* `name` - (Optional) Field `name` has been deprecated from provider. 
 * `description` - (Optional) The VPC description. Defaults to null.
+* `resource_group_id` - (Optional) The Id of resource group which the VPC belongs.
+* `tags` - (Optional) A mapping of tags to assign to the resource.
+* `secondary_cidr_blocks` - (Optional) The secondary CIDR blocks for the VPC.
+* `dry_run` - (Optional, ForceNew) Specifies whether to precheck this request only. Valid values: `true` and `false`.
+* `user_cidrs` - (Optional, ForceNew) The user cidrs of the VPC.
+* `enable_ipv6` - (Optional, ForceNew) Specifies whether to enable the IPv6 CIDR block. Valid values: `false` (Default): disables IPv6 CIDR blocks. `true`: enables IPv6 CIDR blocks. If the `enable_ipv6` is `true`, the system will automatically create a free version of an IPv6 gateway for your private network and assign an IPv6 network segment assigned as /56.
 
 ### Timeouts
 
@@ -49,3 +55,5 @@ The following attributes are exported:
 * `name` - The name of the VPC.
 * `description` - The description of the VPC.
 * `router_id` - The ID of the router created by default on VPC creation.
+* `route_table_id` - The route table ID of the router created by default on VPC creation.
+* `ipv6_cidr_block` - The ipv6 cidr block of VPC.

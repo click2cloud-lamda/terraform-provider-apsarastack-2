@@ -36,6 +36,7 @@ resource "apsarastack_vswitch" "default" {
 resource "apsarastack_slb" "default" {
   name          = "${var.name}"
   vswitch_id    = "${apsarastack_vswitch.default.id}"
+  specification = "slb.s2.small"
 }
 ```
 
@@ -50,6 +51,8 @@ Terraform will autogenerate a name beginning with `tf-lb`.
     - internet: After an Internet SLB instance is created, the system allocates a public IP address so that the instance can forward requests from the Internet.
     - intranet: After an intranet SLB instance is created, the system allocates an intranet IP address so that the instance can only forward intranet requests.
 * `vswitch_id` - (Required for a VPC SLB, Forces New Resource) The VSwitch ID to launch in. If `address_type` is internet, it will be ignore.
+* `specification` - (Optional)  The specification of the Server Load Balancer instance. Default to empty string indicating it is "Shared-Performance" instance.it is must be specified and it valid values are: `slb.s1.small`, `slb.s2.small`, `slb.s2.medium`,
+  `slb.s3.small`, `slb.s3.medium`, `slb.s3.large` and `slb.s4.large`.
 
 
 ## Attributes Reference
